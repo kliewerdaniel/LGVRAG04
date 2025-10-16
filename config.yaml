@@ -1,0 +1,79 @@
+# Graph + Vector RAG System Configuration
+
+# Database Configuration
+database:
+  chromadb:
+    path: "./data/chromadb"
+    vector_dim: 384  # all-MiniLM-L6-v2 dimension
+    max_connections: 100
+
+# Document Processing
+documents:
+  input_dir: "./documents"
+  supported_formats:
+    - ".pdf"
+    - ".md"
+    - ".txt"
+    - ".docx"
+    - ".xlsx"
+    - ".pptx"
+  chunk_size: 1000
+  chunk_overlap: 200
+
+# Embedding Configuration
+embeddings:
+  model_name: "sentence-transformers/all-MiniLM-L6-v2"
+  batch_size: 32
+  device: "cpu"  # Use "cuda" if GPU available
+  normalize: true
+
+# LLM Configuration (Ollama)
+llm:
+  base_url: "http://localhost:11434"
+  model_name: "granite4:micro-h"
+  entity_model: "granite4:micro-h"
+  temperature: 0.1
+  max_tokens: 2048
+  timeout: 120
+
+# Entity Extraction
+entities:
+  enabled: true  
+  max_entities_per_chunk: 10
+  min_confidence: 0.7
+  relationship_types:
+    - "related_to"
+    - "part_of"
+    - "instance_of"
+    - "subclass_of"
+    - "located_in"
+    - "works_at"
+    - "created_by"
+
+# API Configuration
+api:
+  host: "0.0.0.0"
+  port: 8000
+  reload: true
+  workers: 1
+
+# Retrieval Configuration
+retrieval:
+  vector_top_k: 5
+  graph_depth: 2
+  hybrid_alpha: 0.7  # Weight for vector similarity vs graph traversal
+  rerank_top_k: 10
+
+# Logging
+logging:
+  level: "INFO"
+  file: "./data/rag_system.log"
+  max_size: "10 MB"
+  backup_count: 5
+
+# Performance
+performance:
+  cache_embeddings: true
+  cache_size: 1000
+  parallel_processing: true
+  max_workers: 4
