@@ -225,23 +225,74 @@ class EntityExtractor:
 
     def _create_entity_prompt(self, text: str) -> str:
         """Create prompt for entity extraction."""
-        return f"""Extract all named entities from the following text. Return them as a JSON array of objects with 'name', 'type', and 'confidence' fields.
+        return f"""Extract all named entities from the following text. For each entity, provide:
+- name: the exact entity text
+- type: one of the specified entity types
+- confidence: a number between 0.0 and 1.0 indicating your confidence
 
 Entity types: PERSON, ORGANIZATION, LOCATION, DATE, TIME, MONEY, PERCENT, PRODUCT, EVENT, CONCEPT, TECHNOLOGY, LANGUAGE, FRAMEWORK, TOOL
 
+Return ONLY a JSON object with this exact format:
+{{
+  "entities": [
+    {{
+      "name": "entity name",
+      "type": "ENTITY_TYPE",
+      "confidence": 0.95
+    }}
+  ]
+}}
+
 Text: {text}
 
-Return only valid JSON array, no other text:"""
+IMPORTANT: Return only the JSON object, no other text or explanation."""
 
     def _create_relationship_prompt(self, text: str) -> str:
         """Create prompt for relationship extraction."""
-        return f"""Extract relationships between entities in the following text. Return them as a JSON array of objects with 'subject', 'predicate', 'object', and 'confidence' fields.
+        return f"""Extract relationships between entities in the following text. For each relationship, provide:
+- subject: the entity that is performing the action or is the source
+- predicate: the relationship type (one of: {', '.join(self.relationship_types)})
+- object: the entity that is being acted upon or is the target
+- confidence: a number between 0.0 and 1.0 indicating your confidence
 
-Relationship types: {', '.join(self.relationship_types)}
+Return ONLY a JSON object with this exact format:
+{{
+  "relationships": [
+    {{
+      "subject": "entity name",
+      "predicate": "relationship_type",
+      "object": "entity name",
+      "confidence": 0.95
+    }}
+  ]
+}}
 
 Text: {text}
 
-Return only valid JSON array, no other text:"""
+IMPORTANT: Return only the JSON object, no other text or explanation."""
+
+    def _clean_json_response(self, response_text: str) -> str:
+        """Clean and prepare JSON response text for parsing."""
+        if not response_text:
+            return ""
+
+        # Strip whitespace
+        cleaned = response_text.strip()
+
+        # Remove any markdown code block markers
+        cleaned = re.sub(r'^```json\s*', '', cleaned)
+        cleaned = re.sub(r'^```\s*', '', cleaned)
+        cleaned = re.sub(r'\s*```$', '', cleaned)
+
+        # Remove any leading/trailing text that isn't JSON
+        # Find the first { and last }
+        start_idx = cleaned.find('{')
+        end_idx = cleaned.rfind('}')
+
+        if start_idx == -1 or end_idx == -1 or start_idx >= end_idx:
+            return cleaned
+
+        return cleaned[start_idx:end_idx + 1]
 
     async def _call_ollama(self, prompt: str, model: str) -> Optional[Dict[str, Any]]:
         """Call Ollama API for text generation."""
@@ -259,24 +310,44 @@ Return only valid JSON array, no other text:"""
         }
 
         try:
+            logger.debug(f"Calling Ollama API with model {model} for prompt length: {len(prompt)}")
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.timeout)) as session:
                 async with session.post(url, json=payload) as response:
                     if response.status == 200:
                         result = await response.json()
                         response_text = result.get("response", "")
+                        logger.debug(f"Received response from Ollama: {response_text[:200]}...")
 
                         # Try to parse JSON response
                         try:
-                            return json.loads(response_text)
-                        except json.JSONDecodeError:
+                            # Clean the response text first
+                            cleaned_response = self._clean_json_response(response_text)
+                            logger.debug(f"Cleaned response: {cleaned_response[:200]}...")
+                            return json.loads(cleaned_response)
+                        except json.JSONDecodeError as e:
                             logger.warning(f"Failed to parse JSON response: {response_text}")
+                            logger.warning(f"JSON decode error: {e}")
+                            logger.warning("Attempting to extract JSON from response...")
+                            # Try to extract JSON if it's embedded in other text
+                            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                            if json_match:
+                                try:
+                                    logger.debug(f"Attempting to parse extracted JSON: {json_match.group()[:200]}...")
+                                    return json.loads(json_match.group())
+                                except json.JSONDecodeError as je:
+                                    logger.error(f"Failed to extract JSON even with regex: {je}")
+                                    logger.error(f"Extracted text was: {json_match.group()}")
+                            else:
+                                logger.error("No JSON-like pattern found in response")
                             return None
                     else:
-                        logger.error(f"Ollama API error: {response.status} - {await response.text()}")
+                        error_text = await response.text()
+                        logger.error(f"Ollama API error: {response.status} - {error_text}")
                         return None
 
         except asyncio.TimeoutError:
-            logger.error(f"Timeout calling Ollama API for model {model}")
+            logger.error(f"Timeout calling Ollama API for model {model} after {self.timeout}s")
+            logger.info("Consider using a smaller/faster model or reducing max_tokens for entity extraction")
             return None
         except Exception as e:
             logger.error(f"Error calling Ollama API: {e}")
@@ -323,21 +394,50 @@ Return only valid JSON array, no other text:"""
                 if not isinstance(rel_data, dict):
                     continue
 
-                subject = rel_data.get("subject", "").strip()
-                predicate = rel_data.get("predicate", "").strip()
-                obj = rel_data.get("object", "").strip()
-                confidence = float(rel_data.get("confidence", 0.0))
+                # Safely extract and convert to strings
+                try:
+                    subject_raw = rel_data.get("subject", "")
+                    predicate_raw = rel_data.get("predicate", "")
+                    obj_raw = rel_data.get("object", "")
 
-                if subject and predicate and obj and confidence > 0:
-                    relationship = Relationship(
-                        subject=subject,
-                        predicate=predicate,
-                        object=obj,
-                        confidence=confidence,
-                        chunk_id=chunk_id,
-                        source_text=source_text
-                    )
-                    relationships.append(relationship)
+                    # Handle different types of values
+                    if subject_raw is None:
+                        subject = ""
+                    elif isinstance(subject_raw, list):
+                        subject = str(subject_raw[0]) if subject_raw else ""
+                    else:
+                        subject = str(subject_raw).strip()
+
+                    if predicate_raw is None:
+                        predicate = ""
+                    elif isinstance(predicate_raw, list):
+                        predicate = str(predicate_raw[0]) if predicate_raw else ""
+                    else:
+                        predicate = str(predicate_raw).strip()
+
+                    if obj_raw is None:
+                        obj = ""
+                    elif isinstance(obj_raw, list):
+                        obj = str(obj_raw[0]) if obj_raw else ""
+                    else:
+                        obj = str(obj_raw).strip()
+
+                    confidence = float(rel_data.get("confidence", 0.0))
+
+                    if subject and predicate and obj and confidence > 0:
+                        relationship = Relationship(
+                            subject=subject,
+                            predicate=predicate,
+                            object=obj,
+                            confidence=confidence,
+                            chunk_id=chunk_id,
+                            source_text=source_text
+                        )
+                        relationships.append(relationship)
+
+                except (ValueError, TypeError, AttributeError) as e:
+                    logger.warning(f"Skipping invalid relationship data: {rel_data} - Error: {e}")
+                    continue
 
         except Exception as e:
             logger.error(f"Error parsing relationship response: {e}")

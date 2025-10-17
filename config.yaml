@@ -34,7 +34,7 @@ llm:
   entity_model: "granite4:micro-h"
   temperature: 0.1
   max_tokens: 2048
-  timeout: 120
+  timeout: 300
 
 # Entity Extraction
 entities:

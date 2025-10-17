@@ -80,6 +80,7 @@ class DataIngester:
 
         if self.config.entities.enabled:
             try:
+                logger.info("Starting entity and relationship extraction...")
                 entities = self.entity_extractor.extract_entities_sync(chunks)
                 relationships = self.entity_extractor.extract_relationships_sync(chunks)
 
@@ -87,7 +88,8 @@ class DataIngester:
 
             except Exception as e:
                 logger.error(f"Error in entity/relationship extraction: {e}")
-                logger.info("Continuing without entity extraction")
+                logger.warning("Continuing without entity extraction - documents will still be ingested")
+                logger.info("To fix this issue, consider: 1) Using a smaller/faster model, 2) Increasing timeout in config.yaml, 3) Disabling entity extraction in config.yaml")
         else:
             logger.info("Entity extraction disabled in configuration")
 
